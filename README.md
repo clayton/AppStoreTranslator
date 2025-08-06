@@ -13,6 +13,10 @@ Automatically translates App Store Connect metadata using AI translation.
 
 ## Usage
 
+IMPORTANT: before you can automatically update the metadata for other localizations they need to be selected and saved (with your default language values) from App Store Connect.
+
+IMPORTANT: App name and sub-title cannot be updated automatically and need to be copied-and-pasted from the script output
+
 ```bash
 ruby translator.rb [options] <APP_ID>
 ```
