@@ -66,6 +66,7 @@ class AppStoreTranslator
     @app_id = app_id
     @force_update = force_update
     @whats_new_only = whats_new_only
+    @promo_text_only = options[:promo_text]
     @auto_detect = options[:auto_detect]
     @specified_languages = options[:languages]
     @app_store = AppStoreConnect.new
@@ -78,6 +79,8 @@ class AppStoreTranslator
   def run
     if @whats_new_only
       run_whats_new_update
+    elsif @promo_text_only
+      run_promo_text_update
     else
       run_full_translation
     end
@@ -192,6 +195,68 @@ class AppStoreTranslator
     end
 
     puts "\nWhat's New update completed!"
+  end
+
+  def run_promo_text_update
+    puts "Starting Promotional Text update for App ID: #{@app_id}"
+
+    # Get app info
+    app_info = @app_store.get_app_info(@app_id)
+    puts "App: #{app_info['attributes']['bundleId']}"
+
+    # Get current app store version (pending release)
+    version = @app_store.get_current_version(@app_id)
+
+    if version.nil?
+      puts "Error: No editable version found. Please create a new version in App Store Connect first."
+      exit 1
+    end
+
+    puts "Version: #{version['attributes']['versionString']} (#{version['attributes']['appStoreState']})"
+
+    # Fetch English version localization for Promotional Text
+    version_localizations = @app_store.get_version_localizations(version['id'])
+    english_version = version_localizations.find { |loc| loc['attributes']['locale'] == 'en-US' }
+
+    if english_version.nil? || english_version['attributes']['promotionalText'].nil?
+      puts "Error: Could not find English Promotional Text content"
+      exit 1
+    end
+
+    promo_text_english = english_version['attributes']['promotionalText']
+
+    # Determine which locales to process
+    target_locales = determine_target_locales(version['id'])
+
+    # Process each target locale
+    target_locales.each do |locale_code, language_name|
+      print "Working on #{language_name} (#{locale_code}) Promotional Text... "
+
+      begin
+        # Refresh localizations data before processing each locale
+        version_localizations = @app_store.get_version_localizations(version['id'])
+        @existing_version_localizations = version_localizations.group_by { |loc| loc['attributes']['locale'] }
+
+        existing_version = @existing_version_localizations[locale_code]&.first
+
+        if existing_version
+          translated_promo = translate_promo_text(promo_text_english, language_name)
+          @app_store.update_version_localization(existing_version['id'], {
+            'promotionalText' => translated_promo
+          })
+          puts "done"
+        else
+          puts "skipped (no existing localization - add language in App Store Connect first)"
+        end
+      rescue TranslationError => e
+        puts "failed (#{e.original_message})"
+      rescue => e
+        puts "failed (#{e.message})"
+        puts e.backtrace.first(3).join("\n") if ENV['DEBUG']
+      end
+    end
+
+    puts "\nPromotional Text update completed!"
   end
 
   def run_full_translation
@@ -395,7 +460,7 @@ class AppStoreTranslator
 
     if english_attrs['promotionalText']
       print "  Translating promotional text... "
-      translations['promotionalText'] = @translator.translate(english_attrs['promotionalText'], target_language, 'promotional text')
+      translations['promotionalText'] = translate_promo_text(english_attrs['promotionalText'], target_language)
       puts "done"
     end
 
@@ -411,6 +476,19 @@ class AppStoreTranslator
     end
 
     translations
+  end
+
+  PROMO_TEXT_MAX_CHARS = 170
+
+  def translate_promo_text(english_text, target_language)
+    translated = @translator.translate(english_text, target_language, 'promotional text')
+
+    if translated.length > PROMO_TEXT_MAX_CHARS
+      print "too long (#{translated.length} chars), shortening... "
+      translated = @translator.shorten(translated, target_language, 'promotional text', PROMO_TEXT_MAX_CHARS)
+    end
+
+    translated
   end
 
   def should_skip_locale?(locale_code, english_app_info, english_version)
@@ -521,6 +599,10 @@ parser = OptionParser.new do |opts|
   opts.on("-w", "--whats-new", "Update only What's New field from pending release") do
     options[:whats_new] = true
   end
+
+  opts.on("-p", "--promo-text", "Update only Promotional Text field from pending release") do
+    options[:promo_text] = true
+  end
   
   opts.on("-a", "--auto-detect", "Auto-detect available localizations from App Store") do
     options[:auto_detect] = true
@@ -539,6 +621,7 @@ parser = OptionParser.new do |opts|
     puts "  ruby translator.rb 6747396799 --auto-detect"
     puts "  ruby translator.rb 6747396799 --languages German,French,Korean"
     puts "  ruby translator.rb 6747396799 --whats-new --auto-detect"
+    puts "  ruby translator.rb 6747396799 --promo-text --auto-detect"
     exit
   end
 end
@@ -559,13 +642,20 @@ begin
     puts parser
     exit 1
   end
+
+  if options[:whats_new] && options[:promo_text]
+    puts "Error: Cannot use both --whats-new and --promo-text options"
+    puts parser
+    exit 1
+  end
   
   translator = AppStoreTranslator.new(
-    app_id, 
-    options[:force] || false, 
+    app_id,
+    options[:force] || false,
     options[:whats_new] || false,
     auto_detect: options[:auto_detect],
-    languages: options[:languages]
+    languages: options[:languages],
+    promo_text: options[:promo_text]
   )
   translator.run
 rescue OptionParser::InvalidOption => e

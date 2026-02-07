@@ -57,7 +57,7 @@ class Translator
       end
 
       # Clean up the translation (remove any markdown or quotes if present)
-      translation.strip.gsub(/^["']|["']$/, '').gsub(/^```.*\n/, '').gsub(/\n```$/, '').strip
+      clean_translation(translation)
     rescue => e
       puts "  Error: #{e.message}" if ENV['DEBUG']
 
@@ -71,7 +71,66 @@ class Translator
     end
   end
 
+  def shorten(text, target_language, context_type, max_chars)
+    prompt = <<~PROMPT
+      The following #{target_language} translation of #{context_type} is too long at #{text.length} characters.
+      Rewrite it to be under #{max_chars} characters while preserving the key message.
+      Keep it in #{target_language}. Keep it engaging and action-oriented.
+
+      IMPORTANT: Your response must be #{max_chars} characters or fewer. Provide ONLY the shortened text, no explanations.
+
+      Text to shorten:
+      #{text}
+    PROMPT
+
+    max_attempts = 3
+    attempt = 0
+
+    begin
+      attempt += 1
+
+      response = @client.complete(
+        [{ role: 'user', content: prompt }],
+        model: @model
+      )
+
+      if ENV['DEBUG']
+        puts "  DEBUG shorten response: #{JSON.pretty_generate(response)}"
+      end
+
+      result = response.dig('choices', 0, 'message', 'content')
+      raise "No response from API" if result.nil? || result.strip.empty?
+
+      shortened = clean_translation(result)
+
+      if shortened.length > max_chars && attempt < max_attempts
+        prompt = <<~PROMPT
+          This text is STILL too long at #{shortened.length} characters. It MUST be under #{max_chars} characters.
+          Aggressively shorten it. Cut words, simplify, abbreviate if needed. Stay in #{target_language}.
+
+          Provide ONLY the shortened text, no explanations.
+
+          Text:
+          #{shortened}
+        PROMPT
+        raise "Still too long (#{shortened.length}/#{max_chars} chars)"
+      end
+
+      shortened
+    rescue => e
+      if attempt < max_attempts
+        retry
+      else
+        raise TranslationError.new(context_type, target_language, text.length, "Could not shorten to #{max_chars} chars: #{e.message}")
+      end
+    end
+  end
+
   private
+
+  def clean_translation(text)
+    text.strip.gsub(/^["']|["']$/, '').gsub(/^```.*\n/, '').gsub(/\n```$/, '').strip
+  end
 
   def build_translation_prompt(text, target_language, context_type)
     language_instructions = case target_language
