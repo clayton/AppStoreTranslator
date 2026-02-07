@@ -138,29 +138,43 @@ class AppStoreConnect
 
   def make_request(method, path, query = nil, body = nil)
     token = generate_token
-    
+
     options = {
       headers: {
         'Authorization' => "Bearer #{token}",
         'Content-Type' => 'application/json'
       }
     }
-    
+
     options[:query] = query if query
     options[:body] = body.to_json if body
-    
+
+    if ENV['DEBUG']
+      puts "  API #{method.upcase} #{path}"
+      puts "  Query: #{query.inspect}" if query
+      puts "  Body: #{body.inspect}" if body
+    end
+
     response = self.class.send(method, path, options)
-    
+
     unless response.success?
       error_message = "API Error: #{response.code} - #{response.message}"
+
+      if ENV['DEBUG']
+        puts "  API Error: #{response.code} #{response.message}"
+        puts "  Headers: #{response.headers.inspect}"
+        puts "  Body: #{response.body}"
+      end
+
       if response.parsed_response && response.parsed_response['errors']
         errors = response.parsed_response['errors']
         error_details = errors.map { |e| "#{e['title']}: #{e['detail']}" }.join(", ")
         error_message += " - #{error_details}"
       end
+
       raise error_message
     end
-    
+
     response.parsed_response
   end
 

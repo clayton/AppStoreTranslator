@@ -1,5 +1,21 @@
 require 'open_router'
 
+class TranslationError < StandardError
+  attr_reader :context_type, :language, :text_length, :original_message
+
+  def initialize(context_type, language, text_length, original_message)
+    @context_type = context_type
+    @language = language
+    @text_length = text_length
+    @original_message = original_message
+    super("Failed to translate #{context_type} to #{language} (#{text_length} chars): #{original_message}")
+  end
+
+  def likely_too_long?
+    text_length > 1000
+  end
+end
+
 class Translator
   def initialize
     raise "Missing OPENROUTER_API_KEY environment variable" if ENV['OPENROUTER_API_KEY'].nil? || ENV['OPENROUTER_API_KEY'].empty?
@@ -10,27 +26,49 @@ class Translator
     end
     
     @client = OpenRouter::Client.new
-    @model = 'google/gemini-2.5-flash'
+    @model = 'google/gemini-3-flash-preview'
   end
 
   def translate(text, target_language, context_type)
     return nil if text.nil? || text.strip.empty?
-    
+
     prompt = build_translation_prompt(text, target_language, context_type)
-    
-    response = @client.complete(
-      [{ role: 'user', content: prompt }],
-      model: @model
-    )
-    
-    translation = response.dig('choices', 0, 'message', 'content')
-    
-    if translation.nil? || translation.strip.empty?
-      raise "Translation failed - no response from API"
+
+    max_retries = 3
+    retry_count = 0
+
+    begin
+      retry_count += 1
+      puts "  Attempt #{retry_count}/#{max_retries}..." if retry_count > 1
+
+      response = @client.complete(
+        [{ role: 'user', content: prompt }],
+        model: @model
+      )
+
+      if ENV['DEBUG']
+        puts "  DEBUG response: #{JSON.pretty_generate(response)}"
+      end
+
+      translation = response.dig('choices', 0, 'message', 'content')
+
+      if translation.nil? || translation.strip.empty?
+        raise "Translation failed - no response from API"
+      end
+
+      # Clean up the translation (remove any markdown or quotes if present)
+      translation.strip.gsub(/^["']|["']$/, '').gsub(/^```.*\n/, '').gsub(/\n```$/, '').strip
+    rescue => e
+      puts "  Error: #{e.message}" if ENV['DEBUG']
+
+      if retry_count < max_retries
+        wait_time = retry_count * 2  # Progressive backoff: 2s, 4s, 6s
+        sleep(wait_time)
+        retry
+      else
+        raise TranslationError.new(context_type, target_language, text.length, e.message)
+      end
     end
-    
-    # Clean up the translation (remove any markdown or quotes if present)
-    translation.strip.gsub(/^["']|["']$/, '').gsub(/^```.*\n/, '').gsub(/\n```$/, '').strip
   end
 
   private
