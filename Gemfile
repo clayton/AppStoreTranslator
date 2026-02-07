@@ -6,7 +6,7 @@ source "https://rubygems.org"
 
 gem "open_router", "~> 0.3.3"
 
-gem "httparty", "~> 0.23.1"
+gem "httparty", "~> 0.24.0"
 
 gem "dotenv", "~> 3.1"
 
